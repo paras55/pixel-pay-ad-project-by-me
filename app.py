@@ -11,6 +11,137 @@ from typing import List, Dict, Any, Optional, Tuple
 from urllib.parse import quote_plus
 
 # =============================================================================
+# PAGE CONFIG
+# =============================================================================
+
+st.set_page_config(
+    page_title="Facebook Ads Domain Search", 
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+# Custom CSS for modern UI
+st.markdown("""
+    <style>
+    /* Main container padding */
+    .main {
+        padding: 0rem 1rem;
+    }
+    
+    /* Card styling */
+    .ad-card {
+        background: white;
+        border-radius: 12px;
+        overflow: hidden;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+        transition: all 0.3s ease;
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+    }
+    
+    .ad-card:hover {
+        box-shadow: 0 4px 16px rgba(0,0,0,0.15);
+        transform: translateY(-2px);
+    }
+    
+    /* Media container */
+    .media-container {
+        width: 100%;
+        height: 200px;
+        background: #f0f2f5;
+        position: relative;
+        overflow: hidden;
+    }
+    
+    /* Card content */
+    .card-content {
+        padding: 12px;
+        flex-grow: 1;
+        display: flex;
+        flex-direction: column;
+    }
+    
+    /* Page name styling */
+    .page-name {
+        font-weight: 600;
+        font-size: 14px;
+        color: #1c1e21;
+        margin-bottom: 4px;
+        display: -webkit-box;
+        -webkit-line-clamp: 1;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
+    }
+    
+    /* Meta info */
+    .meta-info {
+        font-size: 12px;
+        color: #65676b;
+        margin-bottom: 8px;
+    }
+    
+    /* CTA button */
+    .cta-button {
+        display: inline-block;
+        padding: 4px 12px;
+        background: #1877f2;
+        color: white;
+        border-radius: 6px;
+        font-size: 12px;
+        font-weight: 500;
+        text-decoration: none;
+        margin-top: 8px;
+    }
+    
+    /* Status badge */
+    .status-badge {
+        display: inline-block;
+        padding: 2px 8px;
+        border-radius: 12px;
+        font-size: 11px;
+        font-weight: 500;
+        margin-left: 8px;
+    }
+    
+    .status-active {
+        background: #e3f2e3;
+        color: #1a7f1a;
+    }
+    
+    .status-inactive {
+        background: #fce4e4;
+        color: #c73232;
+    }
+    
+    /* Grid adjustments */
+    .stButton > button {
+        width: 100%;
+        background: #1877f2;
+        color: white;
+        border: none;
+        padding: 0.5rem 1rem;
+        border-radius: 8px;
+        font-weight: 500;
+    }
+    
+    .stButton > button:hover {
+        background: #166fe5;
+    }
+    
+    /* Sidebar styling */
+    .css-1d391kg, .st-emotion-cache-1d391kg {
+        padding-top: 1rem;
+    }
+    
+    /* Hide Streamlit branding */
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    
+    </style>
+""", unsafe_allow_html=True)
+
+# =============================================================================
 # DATE FILTERING HELPER
 # =============================================================================
 
@@ -155,6 +286,55 @@ def extract_selected_fields(item: dict) -> dict:
                 image_url = item[k]
                 break
     
+    # Extract video URL using similar logic
+    video_url = None
+    
+    # Check snapshot for video URLs
+    videos = snap.get("videos")
+    if isinstance(videos, dict):
+        videos = [videos]
+    elif not isinstance(videos, (list, tuple)):
+        videos = []
+    
+    # Check video URL fields in priority order
+    for vid in videos:
+        if not isinstance(vid, dict):
+            continue
+        for k in ("video_hd_url", "video_sd_url", "video_preview_url", "url", "src"):
+            v = vid.get(k)
+            if v:
+                video_url = v
+                break
+        if video_url:
+            break
+    
+    # Direct video fields fallback
+    if not video_url:
+        vid_keys = ["videoUrl", "video_url", "video", "video_hd_url", "video_sd_url"]
+        for k in vid_keys:
+            if item.get(k):
+                video_url = item[k]
+                break
+            if snap.get(k):
+                video_url = snap[k]
+                break
+    
+    # Check creatives for video
+    if not video_url:
+        creatives = item.get("creatives") or item.get("media") or []
+        if isinstance(creatives, dict):
+            creatives = [creatives]
+        if isinstance(creatives, (list, tuple)):
+            for c in creatives:
+                if not isinstance(c, dict):
+                    continue
+                for k in vid_keys:
+                    if c.get(k):
+                        video_url = c[k]
+                        break
+                if video_url:
+                    break
+    
     return {
         "ad_archive_id": item.get("ad_archive_id") or item.get("adId"),
         "categories": categories_disp,
@@ -177,10 +357,11 @@ def extract_selected_fields(item: dict) -> dict:
         "state_media_run_label": item.get("state_media_run_label"),
         "total_active_time": item.get("total_active_time"),
         "original_image_url": image_url,
+        "video_url": video_url,
     }
 
 # =============================================================================
-# STREAMLIT APP
+# SCRAPING FUNCTION
 # =============================================================================
 
 def run_facebook_ads_scrape(
@@ -263,434 +444,366 @@ def run_facebook_ads_scrape(
         st.error(f"Error running scrape: {e}")
         return []
 
+# =============================================================================
+# DISPLAY FUNCTIONS
+# =============================================================================
+
 def display_ad_card(ad, index):
-    """Display enhanced ad card with improved UI"""
+    """Display ad card in modern grid layout"""
     
-    # Card container with styling
+    # Get ad details
+    page_name = ad.get("page_name") or "Unknown Page"
+    ad_id = ad.get("ad_archive_id") or "N/A"
+    is_active = ad.get("is_active")
+    cta_text = ad.get("cta_text")
+    cta_type = ad.get("cta_type")
+    start_date = ad.get("start_date")
+    end_date = ad.get("end_date")
+    image_url = ad.get("original_image_url")
+    video_url = ad.get("video_url")
+    website_url = ad.get("website_url")
+    display_url = ad.get("display_url")
+    link_url = ad.get("link_url")
+    page_id = ad.get("page_id")
+    categories = ad.get("categories")
+    collation_count = ad.get("collation_count")
+    collation_id = ad.get("collation_id")
+    entity_type = ad.get("entity_type")
+    page_entity_type = ad.get("page_entity_type")
+    page_profile_picture_url = ad.get("page_profile_picture_url")
+    page_profile_uri = ad.get("page_profile_uri")
+    state_media_run_label = ad.get("state_media_run_label")
+    total_active_time = ad.get("total_active_time")
+    
+    # Container for the card
     with st.container():
-        st.markdown(
-            f"""
-            <div style="
-                border: 1px solid #e0e0e0;
-                border-radius: 12px;
-                padding: 20px;
-                margin: 16px 0;
-                background: white;
-                box-shadow: 0 2px 8px rgba(0,0,0,0.1);
-            ">
-            """, 
-            unsafe_allow_html=True
-        )
-        
-        col1, col2 = st.columns([1, 2])
-        
-        with col1:
-            # Image section with original logic
-            image_url = ad.get("original_image_url")
-            
-            if image_url:
-                try:
-                    st.image(
-                        image_url, 
-                        width=280,
-                        caption="Ad Creative"
-                    )
-                except Exception as e:
-                    st.markdown(
-                        """
-                        <div style="
-                            width: 280px;
-                            height: 200px;
-                            background: #f5f5f5;
-                            border: 2px dashed #ccc;
-                            border-radius: 8px;
-                            display: flex;
-                            align-items: center;
-                            justify-content: center;
-                            color: #666;
-                            font-size: 14px;
-                        ">
-                            🖼️ Image Error
+        # Display media first (video or image)
+        if video_url:
+            try:
+                st.video(video_url)
+            except Exception as e:
+                # Fallback to image if video fails
+                if image_url:
+                    try:
+                        st.image(image_url, use_column_width=True)
+                    except:
+                        st.markdown("""
+                            <div style="width: 100%; height: 200px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); 
+                                        border-radius: 8px; display: flex; align-items: center; justify-content: center;">
+                                <span style="color: white; font-size: 16px;">📹 Video Error</span>
+                            </div>
+                        """, unsafe_allow_html=True)
+                else:
+                    st.markdown("""
+                        <div style="width: 100%; height: 200px; background: #f0f2f5; 
+                                    border-radius: 8px; display: flex; align-items: center; justify-content: center;">
+                            <span style="color: #65676b; font-size: 48px;">▶</span>
                         </div>
-                        """, 
-                        unsafe_allow_html=True
-                    )
-            else:
-                st.markdown(
-                    """
-                    <div style="
-                        width: 280px;
-                        height: 200px;
-                        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                        border-radius: 8px;
-                        display: flex;
-                        align-items: center;
-                        justify-content: center;
-                        color: white;
-                        font-size: 16px;
-                        font-weight: bold;
-                    ">
-                        📱 No Image Available
+                    """, unsafe_allow_html=True)
+        elif image_url:
+            try:
+                st.image(image_url, use_column_width=True)
+            except Exception as e:
+                st.markdown("""
+                    <div style="width: 100%; height: 200px; background: #f0f2f5; 
+                                border-radius: 8px; display: flex; align-items: center; justify-content: center;">
+                        <span style="color: #65676b; font-size: 16px;">🖼️ Image not available</span>
                     </div>
-                    """, 
-                    unsafe_allow_html=True
-                )
+                """, unsafe_allow_html=True)
+        else:
+            st.markdown("""
+                <div style="width: 100%; height: 200px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); 
+                            border-radius: 8px; display: flex; align-items: center; justify-content: center;">
+                    <span style="color: white; font-size: 16px; font-weight: bold;">No Media Available</span>
+                </div>
+            """, unsafe_allow_html=True)
         
-        with col2:
-            # Header section
-            page_name = ad.get("page_name") or "Unknown Page"
-            st.markdown(f"### 📄 {page_name}")
+        # Card info section
+        st.markdown(f"""
+            <div style="padding: 12px 0; border-bottom: 1px solid #e4e6eb;">
+                <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px;">
+                    <span style="font-weight: 600; font-size: 14px; color: #1c1e21;">
+                        {page_name[:30]}{'...' if len(page_name) > 30 else ''}
+                    </span>
+                    <span style="padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 500;
+                                background: {'#e3f2e3' if is_active else '#fce4e4'}; 
+                                color: {'#1a7f1a' if is_active else '#c73232'};">
+                        {'Active' if is_active else 'Inactive'}
+                    </span>
+                </div>
+                <div style="font-size: 12px; color: #65676b;">
+                    {f'{start_date}' if start_date else 'Date unknown'}
+                </div>
+                {f'<div style="font-size: 12px; color: #1877f2; margin-top: 4px;">{display_url}</div>' if display_url else ''}
+                {f'<div style="margin-top: 8px;"><span style="background: #1877f2; color: white; padding: 4px 12px; border-radius: 6px; font-size: 12px; font-weight: 500;">{cta_text}</span></div>' if cta_text else ''}
+            </div>
+        """, unsafe_allow_html=True)
+        
+        # View details expander with ALL information
+        with st.expander("📊 View Full Details"):
+            # Main information
+            st.markdown("#### 📄 Page Information")
+            col1, col2 = st.columns(2)
             
-            # Status badge
-            is_active = ad.get("is_active")
-            if is_active is not None:
-                status = "🟢 Active" if is_active else "🔴 Inactive"
-                st.markdown(f"**Status:** {status}")
+            with col1:
+                st.write(f"**Page Name:** {page_name}")
+                if page_id:
+                    st.write(f"**Page ID:** `{page_id}`")
+                if is_active is not None:
+                    status = "🟢 Active" if is_active else "🔴 Inactive"
+                    st.write(f"**Status:** {status}")
             
-            # Key information with clickable ad link
-            ad_id = ad.get("ad_archive_id") or "N/A"
-            if ad_id != "N/A":
-                ad_url = f"https://www.facebook.com/ads/library/?id={ad_id}"
-                st.markdown(f"**Ad ID:** `{ad_id}` | [🔗 View on Facebook]({ad_url})")
-            else:
-                st.markdown(f"**Ad ID:** `{ad_id}`")
+            with col2:
+                if ad_id != "N/A":
+                    st.write(f"**Ad ID:** `{ad_id}`")
+                    fb_url = f"https://www.facebook.com/ads/library/?id={ad_id}"
+                    st.markdown(f"[🔗 View on Facebook]({fb_url})")
+                if categories:
+                    st.write(f"**Categories:** *{categories}*")
             
-            page_id = ad.get("page_id") or "N/A"  
-            st.markdown(f"**Page ID:** `{page_id}`")
-            
-            # Categories with styling
-            categories = ad.get("categories")
-            if categories:
-                st.markdown(f"**Categories:** *{categories}*")
-            
-            # CTA Section
-            cta_text = ad.get("cta_text")
-            cta_type = ad.get("cta_type")
-            if cta_text:
-                st.markdown(f"**Call-to-Action:** `{cta_text}`")
+            # CTA Information
+            if cta_text or cta_type:
+                st.markdown("#### 🎯 Call-to-Action")
+                if cta_text:
+                    st.write(f"**CTA Text:** `{cta_text}`")
                 if cta_type:
-                    st.markdown(f"**CTA Type:** {cta_type}")
+                    st.write(f"**CTA Type:** {cta_type}")
             
-            # Display URL and Website URL
-            display_url = ad.get("display_url")
+            # URLs Section
+            st.markdown("#### 🔗 URLs")
             if display_url:
-                st.markdown(f"**Display URL:** {display_url}")
-            
-            website_url = ad.get("website_url")
+                st.write(f"**Display URL:** {display_url}")
             if website_url:
-                st.markdown(f"**Website URL:** [{website_url}]({website_url})")
-            
-            # Link with clickable format (fallback)
-            link_url = ad.get("link_url")
+                st.write(f"**Website URL:** [{website_url}]({website_url})")
             if link_url and link_url != website_url:
-                st.markdown(f"**Landing Page:** [{link_url}]({link_url})")
+                st.write(f"**Landing Page:** [{link_url}]({link_url})")
             
-            # Dates section
+            # Dates Section
+            st.markdown("#### 📅 Timeline")
             col_date1, col_date2 = st.columns(2)
             with col_date1:
-                start_date = ad.get("start_date")
                 if start_date:
-                    st.markdown(f"**Started:** {start_date}")
+                    st.write(f"**Started:** {start_date}")
             with col_date2:
-                end_date = ad.get("end_date")
                 if end_date:
-                    st.markdown(f"**Ended:** {end_date}")
+                    st.write(f"**Ended:** {end_date}")
             
-            # Additional metadata in expander
-            with st.expander("📊 Additional Details"):
-                collation_count = ad.get("collation_count")
+            if total_active_time:
+                st.write(f"**Total Active Time:** {total_active_time}")
+            
+            # Additional Metadata
+            st.markdown("#### 📊 Additional Metadata")
+            
+            col_meta1, col_meta2 = st.columns(2)
+            with col_meta1:
                 if collation_count:
                     st.write(f"**Similar Ads:** {collation_count}")
-                
-                collation_id = ad.get("collation_id")
                 if collation_id:
                     st.write(f"**Group ID:** {collation_id}")
-                
-                entity_type = ad.get("entity_type")
                 if entity_type:
                     st.write(f"**Entity Type:** {entity_type}")
-                
-                total_active_time = ad.get("total_active_time")
-                if total_active_time:
-                    st.write(f"**Total Active Time:** {total_active_time}")
-                
-                page_profile_uri = ad.get("page_profile_uri")
+                if page_entity_type:
+                    st.write(f"**Page Entity Type:** {page_entity_type}")
+            
+            with col_meta2:
                 if page_profile_uri:
                     st.write(f"**Page Profile:** {page_profile_uri}")
-                
-                state_label = ad.get("state_media_run_label")
-                if state_label:
-                    st.write(f"**State Label:** {state_label}")
-        
-        st.markdown("</div>", unsafe_allow_html=True)
+                if state_media_run_label:
+                    st.write(f"**State Label:** {state_media_run_label}")
+                if page_profile_picture_url:
+                    st.write(f"**Profile Picture:** [View]({page_profile_picture_url})")
+            
+            # Media URLs (for debugging/reference)
+            if video_url or image_url:
+                st.markdown("#### 🖼️ Media Links")
+                if video_url:
+                    st.write(f"**Video URL:** {video_url[:100]}{'...' if len(video_url) > 100 else ''}")
+                if image_url:
+                    st.write(f"**Image URL:** {image_url[:100]}{'...' if len(image_url) > 100 else ''}")
+
+# =============================================================================
+# MAIN APP
+# =============================================================================
 
 def main():
-    """Enhanced Streamlit app with improved UI"""
+    """Main Streamlit app"""
     
-    st.set_page_config(
-        page_title="Facebook Ads Domain Search", 
-        layout="wide",
-        initial_sidebar_state="collapsed"
-    )
-    
-    # Header with styling
-    st.markdown(
-        """
-        <div style="
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            padding: 2rem;
-            border-radius: 10px;
-            margin-bottom: 2rem;
-            text-align: center;
-        ">
-            <h1 style="color: white; margin: 0;">🔍 Facebook Ads Domain Search</h1>
-            <p style="color: rgba(255,255,255,0.8); margin: 0.5rem 0 0 0;">
-                Find Facebook ads linking to your domain using the same extraction logic as the original app
-            </p>
-        </div>
-        """, 
-        unsafe_allow_html=True
-    )
-    
-    # Search form with improved styling
-    with st.form("search_form"):
-        st.markdown("### 🎯 Search Parameters")
+    # Sidebar for all controls
+    with st.sidebar:
+        st.title("🔍 Facebook Ads Search")
+        st.markdown("---")
         
-        # Basic parameters
-        col1, col2 = st.columns(2)
+        # API Token
+        apify_token = st.text_input(
+            "Apify API Token", 
+            type="password",
+            placeholder="Enter your Apify API token",
+            help="Get your token from https://apify.com"
+        )
         
-        with col1:
-            apify_token = st.text_input(
-                "🔑 Apify API Token", 
-                type="password",
-                placeholder="Enter your Apify API token",
-                help="Get your token from https://apify.com"
-            )
-            domain = st.text_input(
-                "🌐 Domain URL", 
-                placeholder="example.com",
-                help="Enter domain without http:// or https://"
-            )
-            
-            # Exact phrase match checkbox
-            exact_phrase = st.checkbox(
-                "🎯 Exact Phrase Match",
-                value=False,
-                help='Search for exact domain phrase (adds quotes around domain: "example.com")'
-            )
+        st.markdown("### Search Parameters")
         
-        with col2:
-            count = st.number_input(
-                "📊 Number of Ads", 
-                min_value=1, 
-                max_value=100, 
-                value=10,
-                help="Maximum 100 ads per search"
-            )
-            country = st.selectbox(
-                "🌍 Target Country", 
-                ["US", "GB", "CA", "AU", "DE", "FR", "IN", "BR", "JP"],
-                index=0,
-                help="Country where ads are targeted"
-            )
-            
-            # Active/Inactive status dropdown
-            active_status = st.selectbox(
-                "⚡ Ad Status Filter",
-                [
-                    ("Active Ads Only", "active"),
-                    ("Inactive Ads Only", "inactive"), 
-                    ("All Ads", "all")
-                ],
-                format_func=lambda x: x[0],
-                index=0,
-                help="Filter ads by their current status"
-            )
+        # Domain input
+        domain = st.text_input(
+            "Domain URL", 
+            placeholder="example.com",
+            help="Enter domain without http:// or https://"
+        )
         
-        # Date range selection with calendar
-        st.markdown("#### 📅 Date Range (Optional)")
+        # Exact phrase match
+        exact_phrase = st.checkbox(
+            "Exact Phrase Match",
+            value=False,
+            help='Search for exact domain phrase'
+        )
         
-        # Calculate date limits (6 months back)
+        # Country selection
+        country = st.selectbox(
+            "Target Country", 
+            ["US", "GB", "CA", "AU", "DE", "FR", "IN", "BR", "JP"],
+            index=0
+        )
+        
+        # Ad status
+        active_status = st.selectbox(
+            "Ad Status",
+            options=["active", "inactive", "all"],
+            format_func=lambda x: x.capitalize()
+        )
+        
+        # Number of ads
+        count = st.slider(
+            "Number of Ads", 
+            min_value=1, 
+            max_value=100, 
+            value=10
+        )
+        
+        st.markdown("### Date Filter")
+        
+        # Date filtering
+        use_date_filter = st.checkbox("Enable Date Filtering", value=False)
+        
         today = date.today()
         six_months_ago = today - timedelta(days=180)
         
-        col_date1, col_date2, col_date3 = st.columns([1, 1, 1])
-        
-        with col_date1:
-            use_date_filter = st.checkbox(
-                "Enable Date Filtering", 
-                value=False,
-                help="Filter ads by start date range"
-            )
-        
-        with col_date2:
+        col1, col2 = st.columns(2)
+        with col1:
             start_date = st.date_input(
-                "From Date",
+                "From",
                 value=six_months_ago,
                 min_value=six_months_ago,
-                max_value=today,
-                help="Earliest ad start date to include (only used if date filtering is enabled)"
+                max_value=today
             )
         
-        with col_date3:
+        with col2:
             end_date = st.date_input(
-                "To Date", 
+                "To", 
                 value=today,
                 min_value=six_months_ago,
-                max_value=today,
-                help="Latest ad start date to include (only used if date filtering is enabled)"
+                max_value=today
             )
         
-        # Show info about date filter status
-        if use_date_filter:
-            st.info(f"📅 Will filter ads with start dates between **{start_date}** and **{end_date}**")
-        else:
-            st.info("📅 Date filtering is disabled - will return all ads regardless of date")
-        
-        # Validate date range
-        if use_date_filter and start_date > end_date:
-            st.error("❌ Start date must be before end date")
-        
-        selected_active_status = active_status[1]
-        
-        submitted = st.form_submit_button(
-            "🚀 Search Ads", 
-            type="primary",
-            use_container_width=True
-        )
+        # Search button
+        st.markdown("---")
+        search_button = st.button("🚀 Search Ads", type="primary", use_container_width=True)
+    
+    # Main content area
+    # Header
+    st.markdown("""
+        <h1 style="font-size: 24px; font-weight: 600; margin-bottom: 8px;">
+            Facebook Ads Library
+        </h1>
+        <p style="color: #65676b; font-size: 14px; margin-bottom: 20px;">
+            Search and analyze Facebook ads by domain
+        </p>
+    """, unsafe_allow_html=True)
     
     # Results section
-    if submitted:
+    if search_button:
         if not apify_token:
-            st.error("🔑 Please enter your Apify API token")
+            st.error("Please enter your Apify API token")
             return
         
         if not domain:
-            st.error("🌐 Please enter a domain URL")
+            st.error("Please enter a domain URL")
             return
         
         if use_date_filter and start_date > end_date:
-            st.error("📅 Please select a valid date range")
+            st.error("Start date must be before end date")
             return
         
-        # Loading with progress
-        progress_bar = st.progress(0)
-        status_text = st.empty()
-        
-        status_text.text("🔍 Initializing search...")
-        progress_bar.progress(25)
-        
-        # Build search description
-        search_desc = f"{domain}"
+        # Show search info
+        search_info = f"Searching for **{domain}**"
         if exact_phrase:
-            search_desc += " (exact phrase)"
-        search_desc += f" - {active_status[0]}"
+            search_info += " (exact match)"
+        search_info += f" • {active_status.capitalize()} ads"
         if use_date_filter:
-            search_desc += f" ({start_date} to {end_date})"
+            search_info += f" • {start_date} to {end_date}"
         
-        status_text.text(f"📡 Searching for ads: {search_desc}...")
-        progress_bar.progress(50)
+        st.info(search_info)
         
-        ads = run_facebook_ads_scrape(
-            apify_token=apify_token, 
-            domain=domain, 
-            count=count, 
-            country=country, 
-            exact_phrase=exact_phrase,
-            active_status=selected_active_status,
-            start_date=start_date if use_date_filter else None,
-            end_date=end_date if use_date_filter else None
-        )
-        
-        progress_bar.progress(100)
-        status_text.empty()
-        progress_bar.empty()
+        # Run search with spinner
+        with st.spinner("Searching Facebook Ads Library..."):
+            ads = run_facebook_ads_scrape(
+                apify_token=apify_token, 
+                domain=domain, 
+                count=count, 
+                country=country, 
+                exact_phrase=exact_phrase,
+                active_status=active_status,
+                start_date=start_date if use_date_filter else None,
+                end_date=end_date if use_date_filter else None
+            )
         
         if ads:
-            st.success(f"✅ Found {len(ads)} ads: {search_desc}")
+            # Results header
+            st.success(f"Found {len(ads)} ads")
             
-            # Results summary with enhanced info
+            # Filter/sort bar (placeholder for future features)
+            col1, col2, col3 = st.columns([2, 1, 1])
+            with col1:
+                st.markdown(f"**{len(ads)} Results**")
+            with col2:
+                sort_by = st.selectbox("Sort by", ["Newest", "Oldest"], label_visibility="collapsed")
+            with col3:
+                view_mode = st.selectbox("View", ["Grid", "List"], label_visibility="collapsed")
+            
             st.markdown("---")
-            col_summary1, col_summary2, col_summary3, col_summary4 = st.columns(4)
-            with col_summary1:
-                st.metric("📊 Total Ads", len(ads))
-            with col_summary2:
-                st.metric("🌍 Country", country)
-            with col_summary3:
-                match_type = "Exact" if exact_phrase else "Broad"
-                st.metric("🎯 Match Type", match_type)
-            with col_summary4:
-                st.metric("⚡ Status", active_status[0].split()[0])
             
-            # Show date range if used
-            if use_date_filter:
-                st.info(f"📅 Filtered by start date: **{start_date}** to **{end_date}**")
-            
-            st.markdown("### 📋 Search Results")
-            
-            # Display ads
-            for i, ad in enumerate(ads):
-                display_ad_card(ad, i)
-                
+            # Display ads in grid
+            if view_mode == "Grid":
+                # Create columns for grid layout (4 columns like in screenshot)
+                cols = st.columns(4)
+                for i, ad in enumerate(ads):
+                    with cols[i % 4]:
+                        display_ad_card(ad, i)
+            else:
+                # List view (alternative)
+                for i, ad in enumerate(ads):
+                    with st.container():
+                        display_ad_card(ad, i)
+                        st.markdown("---")
         else:
-            st.warning(f"⚠️ No ads found: {search_desc}")
-            suggestions = [
-                "Try removing the exact phrase match",
-                "Expand the date range or remove date filtering", 
-                "Change from active to all ads",
-                "Try a different domain or country"
-            ]
-            st.info("💡 **Suggestions:**\n" + "\n".join([f"• {s}" for s in suggestions]))
+            st.warning("No ads found for this search")
+            st.info("""
+                **Try adjusting your search:**
+                • Remove exact phrase matching
+                • Change the ad status filter
+                • Expand the date range
+                • Try a different domain
+            """)
     
-    # Footer with instructions
-    with st.expander("ℹ️ How to Use This App"):
-        st.markdown(
-            """
-            ### 🚀 Getting Started
-            1. **Get Apify Token**: Sign up at [apify.com](https://apify.com) and get your API token
-            2. **Enter Domain**: Type the domain you want to search (e.g., "amazon.com", "shopify.com")
-            3. **Configure Options**:
-               - **Exact Phrase**: Check to search for exact domain match (adds quotes)
-               - **Ad Status**: Choose Active, Inactive, or All ads
-               - **Date Range**: Optionally filter by ad start date (up to 6 months back)
-               - **Country & Count**: Select target country and number of results
-            4. **Search**: Click "Search Ads" to find Facebook ads
-            
-            ### 🎯 Search Features
-            - **Broad Match**: `example.com` finds ads containing the domain anywhere
-            - **Exact Match**: `"example.com"` finds ads with exact domain phrase
-            - **Status Filter**: 
-              - Active: Currently running ads
-              - Inactive: Ended or paused ads  
-              - All: Both active and inactive
-            - **Date Range**: Filter ads by when they started running (optional)
-            
-            ### 📅 Date Filtering
-            - **Range**: Up to 6 months back from today
-            - **Client-side**: Filters results after API retrieval for precise control
-            - **Optional**: Leave unchecked to get all available ads
-            
-            ### 🖼️ Image Extraction
-            This app uses the **exact same image extraction logic** as the original Facebook Ads Explorer:
-            - Primary: `snapshot.images[].original_image_url`
-            - Fallback: Direct image fields like `imageUrl`, `thumbnailUrl`
-            - Enhanced: Creatives and media arrays
-            
-            ### 📊 What You'll See
-            Each ad card displays:
-            - **Ad Creative**: Original image from Facebook
-            - **Page Info**: Who's running the ad
-            - **CTA Details**: Call-to-action text and type  
-            - **Links**: Where the ad leads
-            - **Dates**: When the ad started/ended
-            - **Metadata**: Categories, status, and more
-            
-            ### 🔧 Troubleshooting
-            - **No images**: Some ads may not have accessible images
-            - **No results**: Domain might not have active Facebook ads
-            - **API errors**: Check your Apify token and internet connection
-            """
-        )
+    else:
+        # Welcome message when no search has been performed
+        st.markdown("""
+            <div style="text-align: center; padding: 60px 20px; color: #65676b;">
+                <h2 style="font-size: 20px; margin-bottom: 12px;">Welcome to Facebook Ads Search</h2>
+                <p style="font-size: 14px;">
+                    Enter a domain in the sidebar and click Search to find Facebook ads
+                </p>
+            </div>
+        """, unsafe_allow_html=True)
 
 if __name__ == "__main__":
     main()
